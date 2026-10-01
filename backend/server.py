@@ -23,7 +23,9 @@ from reportlab.pdfgen import canvas
 ROOT_DIR = Path(__file__).parent
 client = AsyncIOMotorClient(os.environ["MONGO_URL"])
 db = client[os.environ["DB_NAME"]]
-JWT_SECRET = os.environ.get("JWT_SECRET", "skillmatch-school-demo-secret")
+JWT_SECRET = os.environ.get("JWT_SECRET", "").strip()
+if not JWT_SECRET or len(JWT_SECRET) < 32:
+    raise RuntimeError("JWT_SECRET env var must be set to a strong value (>=32 chars). Refusing to start.")
 JWT_ALGORITHM = "HS256"
 app = FastAPI(title="SkillMatch API")
 api = APIRouter(prefix="/api")
@@ -444,6 +446,11 @@ async def user_profile(username: str, user: dict = Depends(current_user)):
 async def update_application(event_id: str, username: str, data: StatusInput, user: dict = Depends(current_user)):
     if user["role"] != "organizer":
         raise HTTPException(403, "Organizer access required")
+    event = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not event:
+        raise HTTPException(404, "Event not found")
+    if event.get("organizer") != user["username"]:
+        raise HTTPException(403, "You can only manage applications on your own events")
     updated = await db.applications.update_one({"event_id": event_id, "username": username}, {"$set": {"status": data.status}})
     if updated.matched_count == 0:
         raise HTTPException(404, "Application not found")
@@ -454,6 +461,11 @@ async def update_application(event_id: str, username: str, data: StatusInput, us
 async def complete(event_id: str, data: CompleteInput, user: dict = Depends(current_user)):
     if user["role"] != "organizer":
         raise HTTPException(403, "Organizer access required")
+    event = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not event:
+        raise HTTPException(404, "Event not found")
+    if event.get("organizer") != user["username"]:
+        raise HTTPException(403, "You can only mark completion on your own events")
     updated = await db.applications.update_one(
         {"event_id": event_id, "username": data.username, "status": "accepted"},
         {"$set": {"status": "completed", "hours": data.hours, "notes": data.notes}},
