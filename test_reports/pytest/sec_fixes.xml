@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?><testsuites name="pytest tests"><testsuite name="pytest" errors="2" failures="0" skipped="0" tests="2" time="0.999" timestamp="2026-10-01T18:03:03.182945+00:00" hostname="agent-env-7ba062e6-1d57-4507-80ae-3628e1387cd1"><testcase classname="" name="tests.test_security_fixes" time="0.000"><error message="collection failure">backend/tests/test_security_fixes.py:9: in &lt;module&gt;
+    BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+&lt;frozen os&gt;:679: in __getitem__
+    ???
+E   KeyError: 'REACT_APP_BACKEND_URL'</error><error message="collection failure">backend/tests/test_security_fixes.py:9: in &lt;module&gt;
+    BASE_URL = os.environ["REACT_APP_BACKEND_URL"].rstrip("/")
+               ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+&lt;frozen os&gt;:679: in __getitem__
+    ???
+E   KeyError: 'REACT_APP_BACKEND_URL'</error></testcase></testsuite></testsuites>
