@@ -167,7 +167,9 @@ async def update_application(event_id: str, username: str, data: StatusInput, us
 @api.post("/events/{event_id}/complete")
 async def complete(event_id: str, data: CompleteInput, user: dict = Depends(current_user)):
     if user["role"] != "organizer": raise HTTPException(403, "Organizer access required")
-    await db.applications.update_one({"event_id": event_id, "username": data.username, "status": "accepted"}, {"$set": {"status": "completed", "hours": data.hours, "notes": data.notes}})
+    updated = await db.applications.update_one({"event_id": event_id, "username": data.username, "status": "accepted"}, {"$set": {"status": "completed", "hours": data.hours, "notes": data.notes}})
+    if updated.matched_count == 0:
+        raise HTTPException(409, "This volunteer must be accepted before completion can be recorded")
     await db.events.update_one({"id": event_id}, {"$set": {"status": "completed"}})
     return {"ok": True}
 
