@@ -51,7 +51,7 @@ class CompleteInput(BaseModel):
     notes: str = Field(default="", max_length=300)
 
 def public_user(user: dict) -> dict:
-    return {"id": str(user.get("_id", user.get("id", ""))), "username": user["username"], "name": user["name"], "role": user["role"], "department": user.get("department", ""), "skills": user.get("skills", [])}
+    return {"id": str(user.get("_id", user.get("id", user["username"]))), "username": user["username"], "name": user["name"], "role": user["role"], "department": user.get("department", ""), "skills": user.get("skills", [])}
 
 def token_for(user: dict) -> str:
     return jwt.encode({"sub": user["username"], "exp": datetime.now(timezone.utc).timestamp() + 86400}, JWT_SECRET, algorithm=JWT_ALGORITHM)
@@ -161,7 +161,9 @@ async def applicants(user: dict = Depends(current_user)):
 @api.patch("/applications/{event_id}/{username}")
 async def update_application(event_id: str, username: str, data: StatusInput, user: dict = Depends(current_user)):
     if user["role"] != "organizer": raise HTTPException(403, "Organizer access required")
-    await db.applications.update_one({"event_id": event_id, "username": username}, {"$set": {"status": data.status}})
+    updated = await db.applications.update_one({"event_id": event_id, "username": username}, {"$set": {"status": data.status}})
+    if updated.matched_count == 0:
+        raise HTTPException(404, "Application not found")
     return {"ok": True}
 
 @api.post("/events/{event_id}/complete")
