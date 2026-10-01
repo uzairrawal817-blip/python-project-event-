@@ -2,6 +2,10 @@ import { useEffect, useState } from "react";
 import axios from "axios";
 import { QRCodeSVG } from "qrcode.react";
 import {
+  Activity,
+  Award,
+  BarChart3,
+  Briefcase,
   Check,
   ChevronRight,
   Clock3,
@@ -16,6 +20,7 @@ import {
   ScanLine,
   Search,
   Sparkles,
+  Target,
   Trash2,
   UserCog,
   Users,
@@ -237,6 +242,7 @@ function App() {
           />
         )}
         {active === "certificates" && <Certificates certificates={certificates} />}
+        {active === "insights" && <Insights user={user} />}
         {active === "manage" && (
           <Manage
             apps={apps}
@@ -254,6 +260,7 @@ function App() {
                 notify(err.response?.data?.detail || "Could not record completion");
               }
             }}
+            onViewProfile={(username) => setModal({ type: "view-profile", payload: username })}
           />
         )}
         {modal?.type === "create" && (
@@ -296,6 +303,9 @@ function App() {
           />
         )}
         {modal?.type === "qr" && <QrModal event={modal.payload} onClose={() => setModal(null)} />}
+        {modal?.type === "view-profile" && (
+          <VolunteerProfileModal username={modal.payload} onClose={() => setModal(null)} />
+        )}
         {modal?.type === "checkin" && (
           <CheckinModal
             event={modal.payload}
@@ -341,6 +351,9 @@ function Sidebar({ user, active, setActive, certificates, onLogout, onSwitch, on
       <nav>
         <NavButton active={active === "discover"} test="nav-discover-button" onClick={() => setActive("discover")} icon={<LayoutDashboard size={18} />}>
           Discover
+        </NavButton>
+        <NavButton active={active === "insights"} test="nav-insights-button" onClick={() => setActive("insights")} icon={<BarChart3 size={18} />}>
+          Insights
         </NavButton>
         {user.role === "volunteer" && (
           <NavButton active={active === "certificates"} test="nav-certificates-button" onClick={() => setActive("certificates")} icon={<GraduationCap size={18} />}>
@@ -606,27 +619,38 @@ function Certificates({ certificates }) {
   );
 }
 
-function Manage({ apps, onUpdate, onComplete }) {
+function Manage({ apps, onUpdate, onComplete, onViewProfile }) {
   return (
     <section className="content-section standalone">
       <div className="section-head">
         <div>
           <span className="eyebrow">ORGANIZER DESK</span>
           <h2>Manage volunteers</h2>
-          <p className="section-sub">Review applications and celebrate the people who show up.</p>
+          <p className="section-sub">Review applications and celebrate the people who show up. Tap any name to see their campus story.</p>
         </div>
       </div>
       <div className="app-table">
         {apps.length ? (
           apps.map((app) => (
             <div className="app-row" key={`${app.event_id}-${app.username}`} data-testid={`applicant-row-${app.username}`}>
-              <div className="avatar">{app.name[0]}</div>
-              <div className="applicant">
+              <button
+                className="avatar avatar-btn"
+                data-testid={`view-profile-avatar-${app.username}-button`}
+                onClick={() => onViewProfile(app.username)}
+                title={`View ${app.name}'s profile`}
+              >
+                {app.name[0]}
+              </button>
+              <button
+                className="applicant applicant-btn"
+                data-testid={`view-profile-${app.username}-button`}
+                onClick={() => onViewProfile(app.username)}
+              >
                 <b>{app.name}</b>
                 <span>
                   {app.event_title} · {app.skills.join(" · ") || "Campus contributor"}
                 </span>
-              </div>
+              </button>
               <span className={`status ${app.status}`}>{app.status}</span>
               {app.status === "pending" && (
                 <div className="row-actions">
@@ -846,6 +870,318 @@ function CheckinModal({ event, onClose, onCheckin }) {
           {busy ? "Checking in…" : "Confirm attendance"} <ChevronRight size={17} />
         </button>
       </form>
+    </div>
+  );
+}
+
+function Insights({ user }) {
+  const [data, setData] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    const endpoint = user.role === "organizer" ? "/insights/organizer" : "/insights/volunteer";
+    api
+      .get(endpoint)
+      .then((res) => setData(res.data))
+      .catch((err) => setError(err.response?.data?.detail || "Could not load insights"));
+  }, [user.role]);
+  if (error) return <section className="content-section standalone"><div className="empty"><Activity size={25} /><b>{error}</b></div></section>;
+  if (!data) return <section className="content-section standalone"><div className="empty"><Activity size={25} /><b>Gathering your numbers…</b></div></section>;
+  return user.role === "organizer" ? <OrganizerInsights data={data} /> : <VolunteerInsights data={data} />;
+}
+
+function StatCard({ icon, label, value, suffix, testid }) {
+  return (
+    <div className="stat-card" data-testid={testid}>
+      <div className="stat-icon">{icon}</div>
+      <b>
+        {value}
+        {suffix && <small>{suffix}</small>}
+      </b>
+      <span>{label}</span>
+    </div>
+  );
+}
+
+function OrganizerInsights({ data }) {
+  return (
+    <section className="content-section standalone" data-testid="organizer-insights">
+      <div className="section-head">
+        <div>
+          <span className="eyebrow">ORGANIZER INSIGHTS</span>
+          <h2>Your campus impact</h2>
+          <p className="section-sub">A living snapshot of your events, volunteers, and the skills your team covers.</p>
+        </div>
+      </div>
+      <div className="stat-grid">
+        <StatCard testid="stat-events" icon={<Briefcase size={18} />} label="Events hosted" value={data.total_events} />
+        <StatCard testid="stat-volunteers" icon={<Users size={18} />} label="Unique volunteers" value={data.total_volunteers} />
+        <StatCard testid="stat-hours" icon={<Clock3 size={18} />} label="Hours contributed" value={data.total_hours} suffix=" hrs" />
+        <StatCard testid="stat-pending" icon={<Activity size={18} />} label="Pending applications" value={data.pending_applications} />
+      </div>
+
+      <div className="insight-split">
+        <div className="insight-card">
+          <span className="eyebrow">SKILL COVERAGE</span>
+          <h3>Required skills vs. available volunteers</h3>
+          {data.skill_coverage.length ? (
+            <div className="skill-coverage">
+              {data.skill_coverage.map((row) => {
+                const pct = row.required_in_events > 0 ? Math.min(100, (row.available_volunteers / row.required_in_events) * 100) : 0;
+                return (
+                  <div className="coverage-row" key={row.skill} data-testid={`coverage-${row.skill.replace(/\s+/g, "-").toLowerCase()}`}>
+                    <div className="coverage-head">
+                      <b>{row.skill}</b>
+                      <span>
+                        {row.available_volunteers} available · needed in {row.required_in_events}
+                      </span>
+                    </div>
+                    <div className="coverage-bar">
+                      <div className="coverage-fill" style={{ width: `${pct}%` }} />
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+          ) : (
+            <div className="empty mini">
+              <Target size={22} /> <b>No required skills yet</b>
+            </div>
+          )}
+        </div>
+
+        <div className="insight-card">
+          <span className="eyebrow">TOP VOLUNTEERS</span>
+          <h3>Hours contributed leaderboard</h3>
+          {data.top_volunteers.length ? (
+            <div className="leaderboard">
+              {data.top_volunteers.map((v, i) => (
+                <div className="leader-row" key={v.username} data-testid={`leader-${v.username}`}>
+                  <span className="leader-rank">{i + 1}</span>
+                  <div className="avatar">{v.name[0]}</div>
+                  <div className="leader-meta">
+                    <b>{v.name}</b>
+                    <span>{v.department || "Campus contributor"}</span>
+                  </div>
+                  <b className="leader-hours">{v.hours} h</b>
+                </div>
+              ))}
+            </div>
+          ) : (
+            <div className="empty mini">
+              <Users size={22} /> <b>No completed events yet</b>
+            </div>
+          )}
+        </div>
+      </div>
+
+      <div className="insight-card">
+        <span className="eyebrow">PER-EVENT BREAKDOWN</span>
+        <h3>How each event is tracking</h3>
+        <div className="event-breakdown">
+          {data.event_summary.length ? (
+            data.event_summary.map((e) => (
+              <div className="breakdown-row" key={e.id} data-testid={`breakdown-${e.id}`}>
+                <div>
+                  <b>{e.title}</b>
+                  <span>
+                    {e.date} · capacity {e.capacity}
+                  </span>
+                </div>
+                <div className="breakdown-badges">
+                  <span className="status accepted">{e.accepted} accepted</span>
+                  <span className="status completed">{e.completed} completed</span>
+                  {e.pending > 0 && <span className="status">{e.pending} pending</span>}
+                </div>
+              </div>
+            ))
+          ) : (
+            <div className="empty mini">
+              <Briefcase size={22} /> <b>Create your first event to see it here</b>
+            </div>
+          )}
+        </div>
+      </div>
+    </section>
+  );
+}
+
+function VolunteerInsights({ data }) {
+  const all = [...data.events_by_status.pending, ...data.events_by_status.accepted, ...data.events_by_status.completed];
+  return (
+    <section className="content-section standalone" data-testid="volunteer-insights">
+      <div className="section-head">
+        <div>
+          <span className="eyebrow">YOUR CAMPUS JOURNEY</span>
+          <h2>Insights & milestones</h2>
+          <p className="section-sub">Where you've shown up, what you've earned, and what's a great match next.</p>
+        </div>
+      </div>
+      <div className="stat-grid">
+        <StatCard testid="stat-applied" icon={<Target size={18} />} label="Events applied" value={data.events_applied} />
+        <StatCard testid="stat-hours" icon={<Clock3 size={18} />} label="Hours contributed" value={data.total_hours} suffix=" hrs" />
+        <StatCard testid="stat-certificates" icon={<Award size={18} />} label="Certificates earned" value={data.certificates_earned} />
+        <StatCard testid="stat-matches" icon={<Sparkles size={18} />} label="Matching opportunities" value={data.matching_opportunities} />
+      </div>
+
+      <div className="insight-split">
+        <div className="insight-card">
+          <span className="eyebrow">YOUR SKILLS</span>
+          <h3>What the campus knows about you</h3>
+          <p className="section-sub" style={{ marginTop: 4 }}>
+            Department · <b>{data.department || "—"}</b>
+          </p>
+          <div className="chip-list">
+            {(data.skills || []).length ? (
+              data.skills.map((s) => (
+                <span className="chip" key={s} data-testid={`insight-skill-${s}`}>
+                  {s}
+                </span>
+              ))
+            ) : (
+              <span className="section-sub">Add skills in your profile so organizers can find you.</span>
+            )}
+          </div>
+        </div>
+
+        <div className="insight-card">
+          <span className="eyebrow">STATUS BREAKDOWN</span>
+          <h3>Where each event stands</h3>
+          <div className="status-breakdown">
+            <StatBar label="Pending" value={data.events_pending} total={data.events_applied || 1} tone="pending" />
+            <StatBar label="Accepted" value={data.events_accepted} total={data.events_applied || 1} tone="accepted" />
+            <StatBar label="Completed" value={data.events_completed} total={data.events_applied || 1} tone="completed" />
+          </div>
+        </div>
+      </div>
+
+      <div className="insight-card">
+        <span className="eyebrow">RECENT ACTIVITY</span>
+        <h3>Every event you've touched</h3>
+        {all.length ? (
+          <div className="event-breakdown">
+            {all.map((e, i) => (
+              <div className="breakdown-row" key={`${e.id}-${i}`} data-testid={`recent-${e.id}`}>
+                <div>
+                  <b>{e.title}</b>
+                  <span>
+                    {e.date} · {e.location || "Campus"}
+                  </span>
+                </div>
+                <div className="breakdown-badges">
+                  {e.hours > 0 && <span className="status completed">{e.hours} hrs</span>}
+                </div>
+              </div>
+            ))}
+          </div>
+        ) : (
+          <div className="empty mini">
+            <Activity size={22} /> <b>Join your first event to start the story</b>
+          </div>
+        )}
+      </div>
+    </section>
+  );
+}
+
+function StatBar({ label, value, total, tone }) {
+  const pct = total ? Math.round((value / total) * 100) : 0;
+  return (
+    <div className="statbar-row">
+      <div className="statbar-head">
+        <b>{label}</b>
+        <span>{value}</span>
+      </div>
+      <div className="coverage-bar">
+        <div className={`coverage-fill tone-${tone}`} style={{ width: `${pct}%` }} />
+      </div>
+    </div>
+  );
+}
+
+function VolunteerProfileModal({ username, onClose }) {
+  const [profile, setProfile] = useState(null);
+  const [error, setError] = useState("");
+  useEffect(() => {
+    api
+      .get(`/users/${username}`)
+      .then((res) => setProfile(res.data))
+      .catch((err) => setError(err.response?.data?.detail || "Could not load profile"));
+  }, [username]);
+  return (
+    <div className="modal-backdrop">
+      <div className="modal profile-view-modal" data-testid="volunteer-profile-modal">
+        <button type="button" className="modal-close" data-testid="close-profile-view-button" onClick={onClose}>
+          <X size={18} />
+        </button>
+        {error && <p className="form-error">{error}</p>}
+        {!profile && !error && <p className="section-sub">Loading campus story…</p>}
+        {profile && (
+          <>
+            <div className="profile-head">
+              <div className="avatar big">{profile.name[0]}</div>
+              <div>
+                <span className="eyebrow">{profile.role === "organizer" ? "ORGANIZER" : "STUDENT VOLUNTEER"}</span>
+                <h2>{profile.name}</h2>
+                <p className="section-sub">
+                  {profile.department || "Campus community"} · @{profile.username}
+                </p>
+              </div>
+            </div>
+            <div className="profile-stats">
+              <div data-testid="profile-stat-events">
+                <b>{profile.events_completed}</b>
+                <span>Events completed</span>
+              </div>
+              <div data-testid="profile-stat-hours">
+                <b>{profile.total_hours}</b>
+                <span>Hours contributed</span>
+              </div>
+              <div data-testid="profile-stat-certs">
+                <b>{profile.certificates_earned}</b>
+                <span>Certificates earned</span>
+              </div>
+            </div>
+            <div>
+              <span className="eyebrow">SKILLS</span>
+              <div className="chip-list" style={{ marginTop: 10 }}>
+                {(profile.skills || []).length ? (
+                  profile.skills.map((s) => (
+                    <span className="chip" key={s}>
+                      {s}
+                    </span>
+                  ))
+                ) : (
+                  <span className="section-sub">No skills listed yet.</span>
+                )}
+              </div>
+            </div>
+            <div style={{ marginTop: 18 }}>
+              <span className="eyebrow">COMPLETED EVENTS</span>
+              {profile.completed_events.length ? (
+                <div className="event-breakdown" style={{ marginTop: 10 }}>
+                  {profile.completed_events.map((e) => (
+                    <div className="breakdown-row" key={e.event_id} data-testid={`profile-event-${e.event_id}`}>
+                      <div>
+                        <b>{e.title}</b>
+                        <span>
+                          {e.date} · {e.location || "Campus"}
+                        </span>
+                      </div>
+                      <div className="breakdown-badges">
+                        <span className="status completed">{e.hours} hrs</span>
+                      </div>
+                    </div>
+                  ))}
+                </div>
+              ) : (
+                <div className="empty mini" style={{ marginTop: 10 }}>
+                  <Award size={22} /> <b>No completed events yet</b>
+                </div>
+              )}
+            </div>
+          </>
+        )}
+      </div>
     </div>
   );
 }

@@ -283,6 +283,163 @@ async def applicants(user: dict = Depends(current_user)):
     return rows
 
 
+@api.get("/insights/organizer")
+async def organizer_insights(user: dict = Depends(current_user)):
+    if user["role"] != "organizer":
+        raise HTTPException(403, "Organizer access required")
+    events = await db.events.find({"organizer": user["username"]}, {"_id": 0}).to_list(200)
+    event_ids = [e["id"] for e in events]
+    apps = await db.applications.find({"event_id": {"$in": event_ids}}, {"_id": 0}).to_list(500)
+
+    total_hours = sum((a.get("hours") or 0) for a in apps if a.get("status") == "completed")
+    unique_volunteers = {a["username"] for a in apps if a.get("status") in ["accepted", "completed"]}
+
+    # Skill coverage: required skills across events vs covered by accepted/completed volunteers
+    required_skills: dict[str, int] = {}
+    for e in events:
+        for s in e.get("required_skills", []):
+            required_skills[s] = required_skills.get(s, 0) + 1
+    covered_skills: dict[str, int] = {}
+    for a in apps:
+        if a.get("status") not in ["accepted", "completed"]:
+            continue
+        vol = await db.users.find_one({"username": a["username"]}, {"_id": 0, "skills": 1})
+        for s in (vol or {}).get("skills", []):
+            covered_skills[s] = covered_skills.get(s, 0) + 1
+    skill_coverage = [
+        {"skill": s, "required_in_events": required_skills[s], "available_volunteers": covered_skills.get(s, 0)}
+        for s in sorted(required_skills.keys())
+    ]
+
+    # Top volunteers by hours
+    hours_by_user: dict[str, float] = {}
+    for a in apps:
+        if a.get("status") == "completed":
+            hours_by_user[a["username"]] = hours_by_user.get(a["username"], 0) + (a.get("hours") or 0)
+    top_volunteers = []
+    for username, hours in sorted(hours_by_user.items(), key=lambda kv: kv[1], reverse=True)[:5]:
+        vol = await db.users.find_one({"username": username}, {"_id": 0})
+        if vol:
+            top_volunteers.append({"username": username, "name": vol.get("name", username), "department": vol.get("department", ""), "hours": hours})
+
+    # Per-event summary
+    event_summary = []
+    for e in events:
+        e_apps = [a for a in apps if a["event_id"] == e["id"]]
+        event_summary.append({
+            "id": e["id"],
+            "title": e["title"],
+            "date": e.get("date", ""),
+            "status": e.get("status", "open"),
+            "accepted": len([a for a in e_apps if a.get("status") == "accepted"]),
+            "completed": len([a for a in e_apps if a.get("status") == "completed"]),
+            "pending": len([a for a in e_apps if a.get("status") == "pending"]),
+            "capacity": e.get("capacity", 0),
+        })
+
+    return {
+        "total_events": len(events),
+        "events_open": len([e for e in events if e.get("status") == "open"]),
+        "events_completed": len([e for e in events if e.get("status") == "completed"]),
+        "total_volunteers": len(unique_volunteers),
+        "total_hours": total_hours,
+        "pending_applications": len([a for a in apps if a.get("status") == "pending"]),
+        "skill_coverage": skill_coverage,
+        "top_volunteers": top_volunteers,
+        "event_summary": event_summary,
+    }
+
+
+@api.get("/insights/volunteer")
+async def volunteer_insights(user: dict = Depends(current_user)):
+    if user["role"] != "volunteer":
+        raise HTTPException(403, "Volunteer access required")
+    my_apps = await db.applications.find({"username": user["username"]}, {"_id": 0}).to_list(200)
+    total_hours = sum((a.get("hours") or 0) for a in my_apps if a.get("status") == "completed")
+    completed = [a for a in my_apps if a.get("status") == "completed"]
+
+    # Breakdown events
+    events_by_status = {"pending": [], "accepted": [], "completed": []}
+    for a in my_apps:
+        event = await db.events.find_one({"id": a["event_id"]}, {"_id": 0})
+        if not event or a.get("status") not in events_by_status:
+            continue
+        events_by_status[a["status"]].append({
+            "id": event["id"],
+            "title": event["title"],
+            "date": event.get("date", ""),
+            "location": event.get("location", ""),
+            "hours": a.get("hours", 0),
+        })
+
+    # Skill match: how many events needed each of my skills
+    my_skills = [s.lower() for s in user.get("skills", [])]
+    events_matched = 0
+    all_events = await db.events.find({}, {"_id": 0, "required_skills": 1}).to_list(500)
+    for e in all_events:
+        req = [s.lower() for s in e.get("required_skills", [])]
+        if req and set(req) & set(my_skills):
+            events_matched += 1
+
+    return {
+        "events_applied": len(my_apps),
+        "events_pending": len(events_by_status["pending"]),
+        "events_accepted": len(events_by_status["accepted"]),
+        "events_completed": len(completed),
+        "total_hours": total_hours,
+        "certificates_earned": len(completed),
+        "skills": user.get("skills", []),
+        "department": user.get("department", ""),
+        "matching_opportunities": events_matched,
+        "events_by_status": events_by_status,
+    }
+
+
+@api.get("/users/{username}")
+async def user_profile(username: str, user: dict = Depends(current_user)):
+    target = await db.users.find_one({"username": username.lower()}, {"_id": 0})
+    if not target:
+        raise HTTPException(404, "That volunteer could not be found")
+    # Only self or organizers who ran events the user applied to can view
+    if user["username"] != target["username"] and user["role"] != "organizer":
+        raise HTTPException(403, "You do not have access to this profile")
+    if user["role"] == "organizer" and user["username"] != target["username"]:
+        own = [e["id"] for e in await db.events.find({"organizer": user["username"]}, {"_id": 0, "id": 1}).to_list(100)]
+        has_overlap = await db.applications.find_one({"username": target["username"], "event_id": {"$in": own}})
+        if not has_overlap:
+            raise HTTPException(403, "You can only view volunteers that applied to your events")
+
+    apps = await db.applications.find({"username": target["username"]}, {"_id": 0}).to_list(200)
+    completed = []
+    for a in apps:
+        if a.get("status") != "completed":
+            continue
+        event = await db.events.find_one({"id": a["event_id"]}, {"_id": 0})
+        if not event:
+            continue
+        completed.append({
+            "event_id": event["id"],
+            "title": event["title"],
+            "date": event.get("date", ""),
+            "location": event.get("location", ""),
+            "hours": a.get("hours", 0),
+            "notes": a.get("notes", ""),
+        })
+
+    total_hours = sum((c.get("hours") or 0) for c in completed)
+    return {
+        "username": target["username"],
+        "name": target.get("name", target["username"]),
+        "department": target.get("department", ""),
+        "role": target.get("role", "volunteer"),
+        "skills": target.get("skills", []),
+        "events_completed": len(completed),
+        "total_hours": total_hours,
+        "certificates_earned": len(completed),
+        "completed_events": completed,
+    }
+
+
 @api.patch("/applications/{event_id}/{username}")
 async def update_application(event_id: str, username: str, data: StatusInput, user: dict = Depends(current_user)):
     if user["role"] != "organizer":
