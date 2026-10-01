@@ -422,15 +422,7 @@ function Discover({ user, events, query, setQuery, onCreate, onEdit, onDelete, o
             Browse opportunities <ChevronRight size={16} />
           </button>
         </div>
-        <div className="hero-visual">
-          <div className="hero-date">
-            <b>21</b>
-            <span>
-              MAR<br />
-              2026
-            </span>
-          </div>
-        </div>
+        <div className="hero-visual" />
       </section>
       <section className="content-section" id="event-list">
         <div className="section-head">
