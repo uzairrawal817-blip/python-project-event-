@@ -1,19 +1,24 @@
 from dotenv import load_dotenv
 load_dotenv()
 
+import io
 import os
 import secrets
+import string
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Optional
+from typing import Optional
 
 import bcrypt
 import jwt
 from fastapi import APIRouter, Depends, FastAPI, HTTPException, Request, Response
 from fastapi.middleware.cors import CORSMiddleware
-from fastapi.responses import PlainTextResponse
+from fastapi.responses import StreamingResponse
 from motor.motor_asyncio import AsyncIOMotorClient
 from pydantic import BaseModel, Field
+from reportlab.lib.colors import HexColor
+from reportlab.lib.pagesizes import landscape, letter
+from reportlab.pdfgen import canvas
 
 ROOT_DIR = Path(__file__).parent
 client = AsyncIOMotorClient(os.environ["MONGO_URL"])
@@ -23,15 +28,28 @@ JWT_ALGORITHM = "HS256"
 app = FastAPI(title="SkillMatch API")
 api = APIRouter(prefix="/api")
 
+
+def gen_checkin_code() -> str:
+    return "".join(secrets.choice(string.ascii_uppercase + string.digits) for _ in range(6))
+
+
 class LoginInput(BaseModel):
     username: str = Field(min_length=2, max_length=40)
     password: str = Field(min_length=4, max_length=100)
+
 
 class RegisterInput(LoginInput):
     name: str = Field(min_length=2, max_length=80)
     role: str = Field(pattern="^(organizer|volunteer)$")
     department: str = Field(min_length=2, max_length=80)
     skills: list[str] = []
+
+
+class ProfileInput(BaseModel):
+    name: str = Field(min_length=2, max_length=80)
+    department: str = Field(min_length=2, max_length=80)
+    skills: list[str] = []
+
 
 class EventInput(BaseModel):
     title: str = Field(min_length=3, max_length=100)
@@ -42,19 +60,39 @@ class EventInput(BaseModel):
     required_skills: list[str] = []
     capacity: int = Field(ge=1, le=500)
 
+
 class StatusInput(BaseModel):
     status: str = Field(pattern="^(accepted|rejected)$")
+
 
 class CompleteInput(BaseModel):
     username: str
     hours: float = Field(ge=0, le=100)
     notes: str = Field(default="", max_length=300)
 
+
+class CheckinInput(BaseModel):
+    code: str = Field(min_length=4, max_length=12)
+
+
 def public_user(user: dict) -> dict:
-    return {"id": str(user.get("_id", user.get("id", user["username"]))), "username": user["username"], "name": user["name"], "role": user["role"], "department": user.get("department", ""), "skills": user.get("skills", [])}
+    return {
+        "id": str(user.get("_id", user.get("id", user["username"]))),
+        "username": user["username"],
+        "name": user["name"],
+        "role": user["role"],
+        "department": user.get("department", ""),
+        "skills": user.get("skills", []),
+    }
+
 
 def token_for(user: dict) -> str:
-    return jwt.encode({"sub": user["username"], "exp": datetime.now(timezone.utc).timestamp() + 86400}, JWT_SECRET, algorithm=JWT_ALGORITHM)
+    return jwt.encode(
+        {"sub": user["username"], "exp": datetime.now(timezone.utc).timestamp() + 86400},
+        JWT_SECRET,
+        algorithm=JWT_ALGORITHM,
+    )
+
 
 async def current_user(request: Request) -> dict:
     token = request.cookies.get("skillmatch_token") or request.headers.get("Authorization", "").replace("Bearer ", "")
@@ -69,6 +107,7 @@ async def current_user(request: Request) -> dict:
     except jwt.PyJWTError:
         raise HTTPException(401, "Your session has expired")
 
+
 async def seed_data():
     if await db.users.count_documents({}) == 0:
         await db.users.insert_many([
@@ -77,20 +116,26 @@ async def seed_data():
         ])
     if await db.events.count_documents({}) == 0:
         await db.events.insert_many([
-            {"id": "event-python", "title": "Python for Everyone", "description": "A welcoming hands-on workshop helping first-years build their first useful script.", "date": "2025-09-18", "time": "10:00 AM", "location": "Innovation Lab · Block C", "required_skills": ["Python", "Public speaking"], "capacity": 12, "organizer": "campusadmin", "status": "open"},
-            {"id": "event-fest", "title": "Founders Day Festival", "description": "Make the annual campus celebration unforgettable for 2,000 students.", "date": "2025-09-21", "time": "04:30 PM", "location": "Central Quad", "required_skills": ["Design", "Event planning"], "capacity": 30, "organizer": "campusadmin", "status": "open"},
-            {"id": "event-green", "title": "Green Campus Drive", "description": "A morning of planting, cleanup, and small actions with a big campus impact.", "date": "2025-09-27", "time": "08:30 AM", "location": "North Garden", "required_skills": ["Teamwork"], "capacity": 25, "organizer": "campusadmin", "status": "open"},
+            {"id": "event-python", "title": "Python for Everyone", "description": "A welcoming hands-on workshop helping first-years build their first useful script.", "date": "2026-03-18", "time": "10:00 AM", "location": "Innovation Lab · Block C", "required_skills": ["Python", "Public speaking"], "capacity": 12, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
+            {"id": "event-fest", "title": "Founders Day Festival", "description": "Make the annual campus celebration unforgettable for 2,000 students.", "date": "2026-03-21", "time": "04:30 PM", "location": "Central Quad", "required_skills": ["Design", "Event planning"], "capacity": 30, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
+            {"id": "event-green", "title": "Green Campus Drive", "description": "A morning of planting, cleanup, and small actions with a big campus impact.", "date": "2026-03-27", "time": "08:30 AM", "location": "North Garden", "required_skills": ["Teamwork"], "capacity": 25, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
         ])
+    # Backfill checkin_code for any legacy events
+    async for e in db.events.find({"checkin_code": {"$exists": False}}, {"_id": 0, "id": 1}):
+        await db.events.update_one({"id": e["id"]}, {"$set": {"checkin_code": gen_checkin_code()}})
     if await db.applications.count_documents({}) == 0:
         await db.applications.insert_one({"event_id": "event-python", "username": "maya", "status": "accepted", "hours": 0, "notes": ""})
+
 
 @app.on_event("startup")
 async def startup():
     await seed_data()
 
+
 @api.get("/health")
 async def health():
     return {"ok": True, "service": "SkillMatch"}
+
 
 @api.post("/auth/login")
 async def login(data: LoginInput, response: Response):
@@ -99,6 +144,7 @@ async def login(data: LoginInput, response: Response):
         raise HTTPException(401, "That username or password is not right")
     response.set_cookie("skillmatch_token", token_for(user), httponly=True, samesite="lax", max_age=86400)
     return public_user(user)
+
 
 @api.post("/auth/register")
 async def register(data: RegisterInput, response: Response):
@@ -110,46 +156,124 @@ async def register(data: RegisterInput, response: Response):
     response.set_cookie("skillmatch_token", token_for(user), httponly=True, samesite="lax", max_age=86400)
     return public_user(user)
 
+
 @api.post("/auth/logout")
 async def logout(response: Response):
     response.delete_cookie("skillmatch_token")
     return {"ok": True}
 
+
 @api.get("/auth/me")
 async def me(user: dict = Depends(current_user)):
     return public_user(user)
+
+
+@api.patch("/auth/me")
+async def update_profile(data: ProfileInput, user: dict = Depends(current_user)):
+    await db.users.update_one(
+        {"username": user["username"]},
+        {"$set": {"name": data.name.strip(), "department": data.department.strip(), "skills": [s.strip() for s in data.skills if s.strip()]}},
+    )
+    fresh = await db.users.find_one({"username": user["username"]}, {"_id": 0})
+    return public_user(fresh)
+
 
 async def event_payload(event: dict, user: Optional[dict] = None) -> dict:
     result = {k: event.get(k) for k in ["id", "title", "description", "date", "time", "location", "required_skills", "capacity", "organizer", "status"]}
     apps = await db.applications.find({"event_id": event["id"]}, {"_id": 0}).to_list(100)
     result["volunteers"] = len([a for a in apps if a.get("status") in ["accepted", "completed"]])
     result["application"] = next((a.get("status") for a in apps if user and a.get("username") == user.get("username")), None)
-    result["match"] = bool(user and user.get("role") == "volunteer" and not event.get("required_skills") or user and set(s.lower() for s in event.get("required_skills", [])) & set(s.lower() for s in user.get("skills", [])))
+    required = [s.lower() for s in event.get("required_skills", [])]
+    user_skills = [s.lower() for s in (user.get("skills", []) if user else [])]
+    result["match"] = bool(user and user.get("role") == "volunteer" and (not required or set(required) & set(user_skills)))
+    # Only expose checkin_code to the organizer who owns the event
+    if user and user.get("role") == "organizer" and event.get("organizer") == user.get("username"):
+        result["checkin_code"] = event.get("checkin_code")
     return result
+
 
 @api.get("/events")
 async def events(user: dict = Depends(current_user)):
     return [await event_payload(e, user) for e in await db.events.find({}, {"_id": 0}).sort("date", 1).to_list(100)]
 
+
 @api.post("/events")
 async def create_event(data: EventInput, user: dict = Depends(current_user)):
-    if user["role"] != "organizer": raise HTTPException(403, "Only organizers can create events")
-    event = data.model_dump() | {"id": "event-" + secrets.token_hex(4), "organizer": user["username"], "status": "open"}
+    if user["role"] != "organizer":
+        raise HTTPException(403, "Only organizers can create events")
+    event = data.model_dump() | {"id": "event-" + secrets.token_hex(4), "organizer": user["username"], "status": "open", "checkin_code": gen_checkin_code()}
     await db.events.insert_one(event)
     return await event_payload(event, user)
 
+
+@api.patch("/events/{event_id}")
+async def update_event(event_id: str, data: EventInput, user: dict = Depends(current_user)):
+    if user["role"] != "organizer":
+        raise HTTPException(403, "Only organizers can edit events")
+    event = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not event:
+        raise HTTPException(404, "Event not found")
+    if event.get("organizer") != user["username"]:
+        raise HTTPException(403, "You can only edit your own events")
+    await db.events.update_one({"id": event_id}, {"$set": data.model_dump()})
+    fresh = await db.events.find_one({"id": event_id}, {"_id": 0})
+    return await event_payload(fresh, user)
+
+
+@api.delete("/events/{event_id}")
+async def delete_event(event_id: str, user: dict = Depends(current_user)):
+    if user["role"] != "organizer":
+        raise HTTPException(403, "Only organizers can delete events")
+    event = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not event:
+        raise HTTPException(404, "Event not found")
+    if event.get("organizer") != user["username"]:
+        raise HTTPException(403, "You can only delete your own events")
+    await db.events.delete_one({"id": event_id})
+    await db.applications.delete_many({"event_id": event_id})
+    return {"ok": True}
+
+
 @api.post("/events/{event_id}/apply")
 async def apply(event_id: str, user: dict = Depends(current_user)):
-    if user["role"] != "volunteer": raise HTTPException(403, "Switch to volunteer mode to join an event")
+    if user["role"] != "volunteer":
+        raise HTTPException(403, "Switch to volunteer mode to join an event")
     event = await db.events.find_one({"id": event_id}, {"_id": 0})
-    if not event: raise HTTPException(404, "Event not found")
-    if await db.applications.find_one({"event_id": event_id, "username": user["username"]}): raise HTTPException(409, "You already joined this event")
+    if not event:
+        raise HTTPException(404, "Event not found")
+    if await db.applications.find_one({"event_id": event_id, "username": user["username"]}):
+        raise HTTPException(409, "You already joined this event")
     await db.applications.insert_one({"event_id": event_id, "username": user["username"], "status": "pending", "hours": 0, "notes": ""})
     return {"ok": True}
 
+
+@api.post("/events/{event_id}/checkin")
+async def checkin(event_id: str, data: CheckinInput, user: dict = Depends(current_user)):
+    if user["role"] != "volunteer":
+        raise HTTPException(403, "Only volunteers can check in")
+    event = await db.events.find_one({"id": event_id}, {"_id": 0})
+    if not event:
+        raise HTTPException(404, "Event not found")
+    if event.get("checkin_code", "").upper() != data.code.strip().upper():
+        raise HTTPException(400, "That check-in code does not match")
+    row = await db.applications.find_one({"event_id": event_id, "username": user["username"]}, {"_id": 0})
+    if not row:
+        raise HTTPException(409, "Join this event before checking in")
+    if row.get("status") == "completed":
+        return {"ok": True, "already": True}
+    if row.get("status") != "accepted":
+        raise HTTPException(409, "Your organizer needs to accept you before check-in")
+    await db.applications.update_one(
+        {"event_id": event_id, "username": user["username"]},
+        {"$set": {"status": "completed", "hours": row.get("hours") or 3, "notes": row.get("notes") or "Checked in on event day"}},
+    )
+    return {"ok": True}
+
+
 @api.get("/organizer/applicants")
 async def applicants(user: dict = Depends(current_user)):
-    if user["role"] != "organizer": raise HTTPException(403, "Organizer access required")
+    if user["role"] != "organizer":
+        raise HTTPException(403, "Organizer access required")
     own = [e["id"] for e in await db.events.find({"organizer": user["username"]}, {"_id": 0, "id": 1}).to_list(100)]
     rows = []
     for app_row in await db.applications.find({"event_id": {"$in": own}}, {"_id": 0}).to_list(200):
@@ -158,22 +282,30 @@ async def applicants(user: dict = Depends(current_user)):
         rows.append({**app_row, "name": volunteer.get("name", app_row["username"]) if volunteer else app_row["username"], "skills": volunteer.get("skills", []) if volunteer else [], "event_title": event.get("title", "Event") if event else "Event"})
     return rows
 
+
 @api.patch("/applications/{event_id}/{username}")
 async def update_application(event_id: str, username: str, data: StatusInput, user: dict = Depends(current_user)):
-    if user["role"] != "organizer": raise HTTPException(403, "Organizer access required")
+    if user["role"] != "organizer":
+        raise HTTPException(403, "Organizer access required")
     updated = await db.applications.update_one({"event_id": event_id, "username": username}, {"$set": {"status": data.status}})
     if updated.matched_count == 0:
         raise HTTPException(404, "Application not found")
     return {"ok": True}
 
+
 @api.post("/events/{event_id}/complete")
 async def complete(event_id: str, data: CompleteInput, user: dict = Depends(current_user)):
-    if user["role"] != "organizer": raise HTTPException(403, "Organizer access required")
-    updated = await db.applications.update_one({"event_id": event_id, "username": data.username, "status": "accepted"}, {"$set": {"status": "completed", "hours": data.hours, "notes": data.notes}})
+    if user["role"] != "organizer":
+        raise HTTPException(403, "Organizer access required")
+    updated = await db.applications.update_one(
+        {"event_id": event_id, "username": data.username, "status": "accepted"},
+        {"$set": {"status": "completed", "hours": data.hours, "notes": data.notes}},
+    )
     if updated.matched_count == 0:
         raise HTTPException(409, "This volunteer must be accepted before completion can be recorded")
     await db.events.update_one({"id": event_id}, {"$set": {"status": "completed"}})
     return {"ok": True}
+
 
 @api.get("/certificates")
 async def certificates(user: dict = Depends(current_user)):
@@ -181,15 +313,117 @@ async def certificates(user: dict = Depends(current_user)):
     result = []
     for row in rows:
         event = await db.events.find_one({"id": row["event_id"]}, {"_id": 0})
+        if not event:
+            continue
         result.append({"event_id": row["event_id"], "title": event.get("title", "Campus Event"), "hours": row.get("hours", 0), "date": event.get("date", "")})
     return result
 
-@api.get("/certificates/{event_id}", response_class=PlainTextResponse)
+
+def build_certificate_pdf(name: str, event_title: str, hours: float, event_date: str) -> bytes:
+    buf = io.BytesIO()
+    pdf = canvas.Canvas(buf, pagesize=landscape(letter))
+    width, height = landscape(letter)
+
+    # Paper background
+    pdf.setFillColor(HexColor("#f7f8f5"))
+    pdf.rect(0, 0, width, height, fill=1, stroke=0)
+
+    # Deep green frame
+    pdf.setStrokeColor(HexColor("#125c4f"))
+    pdf.setLineWidth(3)
+    pdf.rect(36, 36, width - 72, height - 72, fill=0, stroke=1)
+    pdf.setStrokeColor(HexColor("#cce96d"))
+    pdf.setLineWidth(1)
+    pdf.rect(52, 52, width - 104, height - 104, fill=0, stroke=1)
+
+    # Brand mark top-left
+    pdf.setFillColor(HexColor("#125c4f"))
+    pdf.setFont("Helvetica-Bold", 14)
+    pdf.drawString(80, height - 90, "SKILLMATCH")
+    pdf.setFillColor(HexColor("#8a9690"))
+    pdf.setFont("Helvetica", 9)
+    pdf.drawString(80, height - 104, "MIT-WPU · CAMPUS EVENTS OFFICE")
+
+    # Eyebrow
+    pdf.setFillColor(HexColor("#8a9690"))
+    pdf.setFont("Helvetica", 11)
+    pdf.drawCentredString(width / 2, height - 170, "CERTIFICATE OF COMPLETION")
+
+    # Big title
+    pdf.setFillColor(HexColor("#17212b"))
+    pdf.setFont("Helvetica-Bold", 34)
+    pdf.drawCentredString(width / 2, height - 215, "This is presented to")
+
+    # Recipient name
+    pdf.setFillColor(HexColor("#125c4f"))
+    pdf.setFont("Helvetica-Bold", 46)
+    pdf.drawCentredString(width / 2, height - 275, name)
+
+    # Underline under name
+    pdf.setStrokeColor(HexColor("#cce96d"))
+    pdf.setLineWidth(2)
+    pdf.line(width / 2 - 200, height - 290, width / 2 + 200, height - 290)
+
+    # Body copy
+    pdf.setFillColor(HexColor("#4a5450"))
+    pdf.setFont("Helvetica", 14)
+    body = f"for contributing {hours:g} hours as a student volunteer at"
+    pdf.drawCentredString(width / 2, height - 325, body)
+
+    pdf.setFillColor(HexColor("#17212b"))
+    pdf.setFont("Helvetica-Bold", 20)
+    pdf.drawCentredString(width / 2, height - 355, event_title)
+
+    pdf.setFillColor(HexColor("#8a9690"))
+    pdf.setFont("Helvetica", 11)
+    pdf.drawCentredString(width / 2, height - 380, f"held on {event_date or 'campus'}")
+
+    # Signature line
+    pdf.setStrokeColor(HexColor("#17212b"))
+    pdf.setLineWidth(1)
+    pdf.line(width - 320, 115, width - 100, 115)
+    pdf.setFont("Helvetica", 10)
+    pdf.setFillColor(HexColor("#4a5450"))
+    pdf.drawString(width - 320, 100, "Campus Events Office · MIT-WPU, Pune")
+
+    pdf.line(100, 115, 320, 115)
+    pdf.drawString(100, 100, f"Issued on {datetime.now(timezone.utc).strftime('%d %b %Y')}")
+
+    # Accent dot
+    pdf.setFillColor(HexColor("#cce96d"))
+    pdf.circle(width - 90, height - 90, 10, fill=1, stroke=0)
+
+    pdf.showPage()
+    pdf.save()
+    buf.seek(0)
+    return buf.getvalue()
+
+
+@api.get("/certificates/{event_id}")
 async def certificate(event_id: str, user: dict = Depends(current_user)):
     row = await db.applications.find_one({"event_id": event_id, "username": user["username"], "status": "completed"}, {"_id": 0})
     event = await db.events.find_one({"id": event_id}, {"_id": 0})
-    if not row or not event: raise HTTPException(404, "Certificate is not ready yet")
-    return f"SKILLMATCH\n\nCERTIFICATE OF COMPLETION\n\nThis certifies that {user['name']} contributed {row.get('hours', 0)} hours to {event['title']} on {event.get('date', '')}.\n\nCampus Events Office"
+    if not row or not event:
+        raise HTTPException(404, "Certificate is not ready yet")
+    pdf_bytes = build_certificate_pdf(
+        name=user["name"],
+        event_title=event["title"],
+        hours=row.get("hours", 0),
+        event_date=event.get("date", ""),
+    )
+    safe = event_id.replace("/", "-")
+    return StreamingResponse(
+        io.BytesIO(pdf_bytes),
+        media_type="application/pdf",
+        headers={"Content-Disposition": f'attachment; filename="skillmatch-{safe}.pdf"'},
+    )
+
 
 app.include_router(api)
-app.add_middleware(CORSMiddleware, allow_credentials=True, allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","), allow_methods=["*"], allow_headers=["*"])
+app.add_middleware(
+    CORSMiddleware,
+    allow_credentials=True,
+    allow_origins=os.environ.get("CORS_ORIGINS", "*").split(","),
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
