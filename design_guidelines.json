@@ -1,0 +1,47 @@
+{
+  "app_name": "SkillMatch - Campus Event & Volunteer Management System",
+  "context": "College campus event management and volunteer skill-matching platform with organizers and volunteers, skill matching, attendance tracking, and downloadable completion certificates.",
+  "theme": "Light mode primary with vibrant academic and professional campus-event style (Archetype 3 Pastel/Soft + Archetype 6 Vibrant Play blend)",
+  "typography": {
+    "heading_font": "Outfit, sans-serif",
+    "body_font": "Plus Jakarta Sans, sans-serif",
+    "hierarchy": {
+      "h1": "text-4xl sm:text-5xl lg:text-6xl tracking-tight font-extrabold",
+      "h2": "text-2xl sm:text-3xl lg:text-4xl tracking-tight font-bold",
+      "h3": "text-xl sm:text-2xl font-semibold",
+      "h4": "text-lg sm:text-xl font-semibold",
+      "body": "text-base text-slate-700",
+      "small": "text-sm text-slate-500"
+    }
+  },
+  "colors": {
+    "primary": "#4F46E5",
+    "primary_hover": "#4338CA",
+    "accent": "#06B6D4",
+    "background": "#F8FAFC",
+    "card_bg": "#FFFFFF",
+    "border": "#E2E8F0",
+    "text_main": "#0F172A",
+    "text_muted": "#64748B",
+    "success": "#10B981",
+    "warning": "#F59E0B"
+  },
+  "components": [
+    "Navbar with Role Switcher (Organizer vs Volunteer)",
+    "Role Switcher Modal & Quick Toggle",
+    "Event Browsing & Skill Filtering",
+    "Skill Matching Algorithm View",
+    "Event Creation Modal (for Organizers)",
+    "Volunteer Signup & Application Flow",
+    "Organizer Dashboard (Manage events, view signups, mark attendance/completion)",
+    "Volunteer Dashboard (My events, skills profile, earned certificates)",
+    "Certificate Generator & Download View (PDF/Printable canvas)"
+  ],
+  "image_urls": {
+    "hero_campus": "https://images.unsplash.com/photo-1622604647545-0cada2f34470?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwxfHxjb2xsZWdlJTIwY2FtcHVzJTIwc3R1ZGVudHMlMjBldmVudCUyMGZlc3RpdmFsJTIwdW5pdmVyc2l0eXxlbnwwfHx8fDE3ODY0NDA2OTZ8MA&ixlib=rb-4.1.0&q=85",
+    "campus_festival": "https://images.unsplash.com/photo-1720525200240-17cd4ffd127f?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHw0fHxjb2xsZWdlJTIwY2FtcHVzJTIwc3R1ZGVudHMlMjBldmVudCUyMGZlc3RpdmFsJTIwdW5pdmVyc2l0eXxlbnwwfHx8fDE3ODY0NDA2OTZ8MA&ixlib=rb-4.1.0&q=85",
+    "campus_building": "https://images.unsplash.com/photo-1604136514790-b27086f6c36e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwyfHxjb2xsZWdlJTIwY2FtcHVzJTIwc3R1ZGVudHMlMjBldmVudCUyMGZlc3RpdmFsJTIwdW5pdmVyc2l0eXxlbnwwfHx8fDE3ODY0NDA2OTZ8MA&ixlib=rb-4.1.0&q=85",
+    "students_field": "https://images.unsplash.com/photo-1736496503629-2d64fafca24e?crop=entropy&cs=srgb&fm=jpg&ixid=M3w4NjAzNTl8MHwxfHNlYXJjaHwzfHxjb2xsZWdlJTIwY2FtcHVzJTIwc3R1ZGVudHMlMjBldmVudCUyMGZlc3RpdmFsJTIwdW5pdmVyc2l0eXxlbnwwfHx8fDE3ODY0NDA2OTZ8MA&ixlib=rb-4.1.0&q=85"
+  },
+  "instructions_to_main_agent": "Build a responsive, polished full-stack application with SQLite database (seeded with demo users and events), FastAPI backend, and React frontend. Ensure all buttons, inputs, and interactive elements have test IDs and accessible states. Include the requested role switcher, skill matching, attendance tracking, and downloadable completion certificates."
+}
