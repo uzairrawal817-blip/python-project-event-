@@ -140,8 +140,10 @@ function App() {
   const [apps, setApps] = useState([]);
   const [certificates, setCertificates] = useState([]);
   const [query, setQuery] = useState("");
+  const [filters, setFilters] = useState({ skill: "", department: "", type: "", date: "" });
   const [active, setActive] = useState("discover");
-  const [modal, setModal] = useState(null); // {type: 'create'|'edit'|'profile'|'qr'|'checkin', payload}
+  const [selectedEventId, setSelectedEventId] = useState(null);
+  const [modal, setModal] = useState(null); // {type: 'create'|'edit'|'profile'|'qr'|'checkin'|'view-profile', payload}
   const [toast, setToast] = useState("");
   const [loading, setLoading] = useState(true);
 
@@ -178,16 +180,40 @@ function App() {
   if (loading) return <div className="loading">Loading your campus…</div>;
   if (!user) return <SignIn onLogin={setUser} />;
 
-  const filtered = events.filter((item) =>
-    `${item.title} ${item.description} ${item.location} ${item.required_skills.join(" ")}`.toLowerCase().includes(query.toLowerCase())
-  );
+  // Centralised event-action handlers so Discover and EventDetail share them
+  const handleApply = async (item) => {
+    try {
+      await api.post(`/events/${item.id}/apply`);
+      notify("Application submitted — the organizer will be in touch.");
+      load(user);
+    } catch (err) {
+      notify(err.response?.data?.detail || "Could not apply to this event");
+    }
+  };
+  const handleDelete = async (item) => {
+    if (!window.confirm(`Delete "${item.title}"? This cannot be undone.`)) return;
+    try {
+      await api.delete(`/events/${item.id}`);
+      notify("Event deleted.");
+      setSelectedEventId(null);
+      setActive("discover");
+      load(user);
+    } catch (err) {
+      notify(err.response?.data?.detail || "Could not delete event");
+    }
+  };
+  const openDetail = (item) => {
+    setSelectedEventId(item.id);
+    setActive("event-detail");
+  };
+  const selectedEvent = events.find((e) => e.id === selectedEventId) || null;
 
   return (
     <div className="app-frame">
       <Sidebar
         user={user}
         active={active}
-        setActive={setActive}
+        setActive={(k) => { setActive(k); if (k !== "event-detail") setSelectedEventId(null); }}
         certificates={certificates}
         onLogout={logout}
         onSwitch={() => setUser({ ...user, role: user.role === "organizer" ? "volunteer" : "organizer" })}
@@ -213,48 +239,46 @@ function App() {
         {active === "discover" && (
           <Discover
             user={user}
-            events={filtered}
+            events={events}
             query={query}
             setQuery={setQuery}
+            filters={filters}
+            setFilters={setFilters}
             onCreate={() => setModal({ type: "create" })}
             onEdit={(item) => setModal({ type: "edit", payload: item })}
-            onDelete={async (item) => {
-              if (!window.confirm(`Delete "${item.title}"? This cannot be undone.`)) return;
-              try {
-                await api.delete(`/events/${item.id}`);
-                notify("Event deleted.");
-                load(user);
-              } catch (err) {
-                notify(err.response?.data?.detail || "Could not delete event");
-              }
-            }}
+            onDelete={handleDelete}
             onShowQr={(item) => setModal({ type: "qr", payload: item })}
             onCheckin={(item) => setModal({ type: "checkin", payload: item })}
-            onApply={async (item) => {
-              try {
-                await api.post(`/events/${item.id}/apply`);
-                notify("You're on the list — the organizer will be in touch.");
-                load(user);
-              } catch (err) {
-                notify(err.response?.data?.detail || "Could not join this event");
-              }
-            }}
+            onApply={handleApply}
+            onOpen={openDetail}
           />
         )}
-        {active === "certificates" && <Certificates certificates={certificates} />}
+        {active === "event-detail" && selectedEvent && (
+          <EventDetail
+            event={selectedEvent}
+            user={user}
+            onBack={() => { setActive("discover"); setSelectedEventId(null); }}
+            onApply={() => handleApply(selectedEvent)}
+            onCheckin={() => setModal({ type: "checkin", payload: selectedEvent })}
+            onEdit={() => setModal({ type: "edit", payload: selectedEvent })}
+            onDelete={() => handleDelete(selectedEvent)}
+            onShowQr={() => setModal({ type: "qr", payload: selectedEvent })}
+          />
+        )}
+        {active === "certificates" && <Certificates certificates={certificates} onDownload={(cert) => notify(`Downloading "${cert.title}" certificate…`)} />}
         {active === "insights" && <Insights user={user} />}
         {active === "manage" && (
           <Manage
             apps={apps}
             onUpdate={async (eventId, username, status) => {
               await api.patch(`/applications/${eventId}/${username}`, { status });
-              notify(`Application ${status}.`);
+              notify(status === "accepted" ? "Applicant accepted." : "Applicant rejected.");
               load(user);
             }}
             onComplete={async (eventId, username) => {
               try {
                 await api.post(`/events/${eventId}/complete`, { username, hours: 4, notes: "Completed campus contribution" });
-                notify("Completion recorded — certificate is ready.");
+                notify("Marked complete — certificate issued.");
                 load(user);
               } catch (err) {
                 notify(err.response?.data?.detail || "Could not record completion");
@@ -393,7 +417,24 @@ function NavButton({ active, test, onClick, icon, children }) {
   );
 }
 
-function Discover({ user, events, query, setQuery, onCreate, onEdit, onDelete, onShowQr, onCheckin, onApply }) {
+function Discover({ user, events, query, setQuery, filters, setFilters, onCreate, onEdit, onDelete, onShowQr, onCheckin, onApply, onOpen }) {
+  // Derive filter options from the dataset
+  const skillOptions = Array.from(new Set(events.flatMap((e) => e.required_skills || []))).sort();
+  const deptOptions = Array.from(new Set(events.map((e) => e.department).filter(Boolean))).sort();
+  const typeOptions = Array.from(new Set(events.map((e) => e.event_type).filter(Boolean))).sort();
+
+  const filtered = events.filter((item) => {
+    if (query && !`${item.title} ${item.description} ${item.location} ${(item.required_skills || []).join(" ")}`.toLowerCase().includes(query.toLowerCase())) return false;
+    if (filters.skill && !(item.required_skills || []).map((s) => s.toLowerCase()).includes(filters.skill.toLowerCase())) return false;
+    if (filters.department && item.department !== filters.department) return false;
+    if (filters.type && item.event_type !== filters.type) return false;
+    if (filters.date && item.date !== filters.date) return false;
+    return true;
+  });
+
+  const clearFilters = () => setFilters({ skill: "", department: "", type: "", date: "" });
+  const anyFilter = !!(query || filters.skill || filters.department || filters.type || filters.date);
+
   return (
     <>
       <section className="welcome">
@@ -455,11 +496,43 @@ function Discover({ user, events, query, setQuery, onCreate, onEdit, onDelete, o
             <input data-testid="event-search-input" value={query} onChange={(e) => setQuery(e.target.value)} placeholder="Search events, skills, or places…" />
           </div>
           <span className="result-count" data-testid="event-count">
-            {events.length} events
+            {filtered.length} of {events.length} events
           </span>
         </div>
+        <div className="filter-bar">
+          <select data-testid="filter-skill" value={filters.skill} onChange={(e) => setFilters({ ...filters, skill: e.target.value })}>
+            <option value="">All skills</option>
+            {skillOptions.map((s) => (
+              <option key={s} value={s}>
+                {s}
+              </option>
+            ))}
+          </select>
+          <select data-testid="filter-department" value={filters.department} onChange={(e) => setFilters({ ...filters, department: e.target.value })}>
+            <option value="">All departments</option>
+            {deptOptions.map((d) => (
+              <option key={d} value={d}>
+                {d}
+              </option>
+            ))}
+          </select>
+          <select data-testid="filter-type" value={filters.type} onChange={(e) => setFilters({ ...filters, type: e.target.value })}>
+            <option value="">All types</option>
+            {typeOptions.map((t) => (
+              <option key={t} value={t}>
+                {t}
+              </option>
+            ))}
+          </select>
+          <input type="date" data-testid="filter-date" value={filters.date} onChange={(e) => setFilters({ ...filters, date: e.target.value })} />
+          {anyFilter && (
+            <button className="text-chip" data-testid="clear-filters-button" onClick={() => { setQuery(""); clearFilters(); }}>
+              <X size={13} /> Clear
+            </button>
+          )}
+        </div>
         <div className="event-grid">
-          {events.map((item, index) => (
+          {filtered.map((item, index) => (
             <EventCard
               key={item.id}
               event={item}
@@ -469,15 +542,28 @@ function Discover({ user, events, query, setQuery, onCreate, onEdit, onDelete, o
               onDelete={() => onDelete(item)}
               onShowQr={() => onShowQr(item)}
               onCheckin={() => onCheckin(item)}
+              onOpen={() => onOpen(item)}
               index={index}
             />
           ))}
         </div>
-        {events.length === 0 && (
-          <div className="empty">
+        {filtered.length === 0 && (
+          <div className="empty" data-testid="events-empty">
             <Search size={25} />
-            <b>No events found</b>
-            <span>Try a different search term.</span>
+            <b>{anyFilter ? "No events match these filters" : "No events yet"}</b>
+            <span>
+              {anyFilter ? (
+                <button className="text-btn inline" data-testid="empty-clear-filters" onClick={() => { setQuery(""); clearFilters(); }}>
+                  Clear filters to see every opportunity
+                </button>
+              ) : user.role === "organizer" ? (
+                <button className="text-btn inline" data-testid="empty-create-event" onClick={onCreate}>
+                  Create the first campus event
+                </button>
+              ) : (
+                "Check back soon — organizers are planning what's next."
+              )}
+            </span>
           </div>
         )}
       </section>
@@ -485,12 +571,45 @@ function Discover({ user, events, query, setQuery, onCreate, onEdit, onDelete, o
   );
 }
 
-function EventCard({ event, user, onApply, onEdit, onDelete, onShowQr, onCheckin, index }) {
+function applyLabel(status) {
+  if (status === "completed") return "Completed";
+  if (status === "accepted") return "Accepted";
+  if (status === "pending") return "Applied";
+  if (status === "rejected") return "Not selected";
+  return "Apply";
+}
+
+const DATE_FMT = { day: "numeric", month: "short", year: "numeric" };
+function fmtDate(iso) {
+  if (!iso) return "";
+  try {
+    return new Date(`${iso}T12:00:00`).toLocaleDateString("en-US", DATE_FMT);
+  } catch {
+    return iso;
+  }
+}
+
+function stopProp(fn) {
+  return (e) => {
+    e.stopPropagation();
+    fn && fn();
+  };
+}
+
+function EventCard({ event, user, onApply, onEdit, onDelete, onShowQr, onCheckin, onOpen, index }) {
   const joined = ["pending", "accepted", "completed"].includes(event.application);
   const isMine = user.role === "organizer" && event.organizer === user.username;
   const canCheckIn = user.role === "volunteer" && event.application === "accepted";
+  const typeLabel = (event.event_type || "Learning").toUpperCase();
   return (
-    <article className={`event-card card-${index % 3}`} data-testid={`event-card-${event.id}`}>
+    <article
+      className={`event-card card-${index % 3} clickable`}
+      data-testid={`event-card-${event.id}`}
+      role="button"
+      tabIndex={0}
+      onClick={onOpen}
+      onKeyDown={(e) => (e.key === "Enter" ? onOpen() : null)}
+    >
       <div className="event-card-top">
         <span className="date-block">
           <b>{new Date(`${event.date}T12:00:00`).getDate()}</b>
@@ -507,7 +626,7 @@ function EventCard({ event, user, onApply, onEdit, onDelete, onShowQr, onCheckin
         </span>
       </div>
       <div className="event-info">
-        <span className="event-type">{event.title.includes("Festival") ? "CAMPUS CULTURE" : event.title.includes("Green") ? "COMMUNITY" : "LEARNING"}</span>
+        <span className="event-type">{typeLabel}</span>
         <h3>{event.title}</h3>
         <p>{event.description}</p>
         <div className="event-meta">
@@ -521,30 +640,30 @@ function EventCard({ event, user, onApply, onEdit, onDelete, onShowQr, onCheckin
       </div>
       <div className="event-footer">
         <div className="skill-list">
-          {event.required_skills.slice(0, 2).map((skill) => (
+          {(event.required_skills || []).slice(0, 2).map((skill) => (
             <span key={skill}>{skill}</span>
           ))}
         </div>
         {user.role === "volunteer" ? (
           <div className="card-actions">
             {canCheckIn && (
-              <button className="icon-chip" data-testid={`event-checkin-${event.id}-button`} onClick={onCheckin} title="Check in">
+              <button className="icon-chip" data-testid={`event-checkin-${event.id}-button`} onClick={stopProp(onCheckin)} title="Check in">
                 <ScanLine size={14} />
               </button>
             )}
             <button
               className={joined ? "joined-btn" : "arrow-btn"}
               data-testid={`event-apply-${event.id}-button`}
-              onClick={onApply}
+              onClick={stopProp(onApply)}
               disabled={joined}
             >
               {joined ? (
                 <>
-                  <Check size={14} /> {event.application}
+                  <Check size={14} /> {applyLabel(event.application)}
                 </>
               ) : (
                 <>
-                  Join event <ChevronRight size={16} />
+                  {applyLabel()} <ChevronRight size={16} />
                 </>
               )}
             </button>
@@ -553,13 +672,13 @@ function EventCard({ event, user, onApply, onEdit, onDelete, onShowQr, onCheckin
           <div className="card-actions">
             {isMine && (
               <>
-                <button className="icon-chip" data-testid={`event-qr-${event.id}-button`} onClick={onShowQr} title="Show check-in QR">
+                <button className="icon-chip" data-testid={`event-qr-${event.id}-button`} onClick={stopProp(onShowQr)} title="Show check-in QR">
                   <QrCode size={14} />
                 </button>
-                <button className="icon-chip" data-testid={`event-edit-${event.id}-button`} onClick={onEdit} title="Edit event">
+                <button className="icon-chip" data-testid={`event-edit-${event.id}-button`} onClick={stopProp(onEdit)} title="Edit event">
                   <Pencil size={14} />
                 </button>
-                <button className="icon-chip danger" data-testid={`event-delete-${event.id}-button`} onClick={onDelete} title="Delete event">
+                <button className="icon-chip danger" data-testid={`event-delete-${event.id}-button`} onClick={stopProp(onDelete)} title="Delete event">
                   <Trash2 size={14} />
                 </button>
               </>
@@ -574,7 +693,101 @@ function EventCard({ event, user, onApply, onEdit, onDelete, onShowQr, onCheckin
   );
 }
 
-function Certificates({ certificates }) {
+function EventDetail({ event, user, onBack, onApply, onCheckin, onEdit, onDelete, onShowQr }) {
+  const joined = ["pending", "accepted", "completed"].includes(event.application);
+  const isMine = user.role === "organizer" && event.organizer === user.username;
+  const canCheckIn = user.role === "volunteer" && event.application === "accepted";
+  const label = applyLabel(event.application);
+  return (
+    <section className="content-section standalone" data-testid="event-detail">
+      <button className="back-btn" data-testid="back-to-list-button" onClick={onBack}>
+        <ChevronRight size={14} style={{ transform: "rotate(180deg)" }} /> Back to opportunities
+      </button>
+      <article className="detail-hero">
+        <div>
+          <span className="eyebrow">{(event.event_type || "Learning").toUpperCase()} · {event.department || "Campus"}</span>
+          <h1>{event.title}</h1>
+          <p className="section-sub" style={{ maxWidth: 560 }}>{event.description}</p>
+          <div className="detail-meta">
+            <span><CalendarIconDot /> {fmtDate(event.date)}</span>
+            <span><Clock3 size={15} /> {event.time}{event.duration ? ` · ${event.duration}` : ""}</span>
+            <span><MapPin size={15} /> {event.location}</span>
+            <span><UserCog size={15} /> Organizer · {event.organizer_name || event.organizer}</span>
+          </div>
+        </div>
+        <div className="detail-side">
+          <div className="seats-pill" data-testid="seats-available">
+            <b>{event.seats_available ?? Math.max(0, (event.capacity || 0) - (event.volunteers || 0))}</b>
+            <span>seats available of {event.capacity}</span>
+          </div>
+          <div className="chip-list">
+            {(event.required_skills || []).length ? (
+              event.required_skills.map((s) => (
+                <span className="chip" key={s} data-testid={`detail-skill-${s}`}>
+                  {s}
+                </span>
+              ))
+            ) : (
+              <span className="section-sub">Open to any skill set.</span>
+            )}
+          </div>
+          {user.role === "volunteer" ? (
+            <div className="detail-cta">
+              {canCheckIn && (
+                <button className="light-btn" data-testid="detail-checkin-button" onClick={onCheckin}>
+                  <ScanLine size={15} /> Check in
+                </button>
+              )}
+              <button
+                className="primary-btn full"
+                data-testid="detail-apply-button"
+                disabled={joined}
+                onClick={onApply}
+              >
+                {joined ? (
+                  <>
+                    <Check size={16} /> {label}
+                  </>
+                ) : (
+                  <>
+                    {label} <ChevronRight size={16} />
+                  </>
+                )}
+              </button>
+            </div>
+          ) : isMine ? (
+            <div className="detail-cta">
+              <button className="light-btn" data-testid="detail-qr-button" onClick={onShowQr}>
+                <QrCode size={15} /> Show check-in QR
+              </button>
+              <button className="light-btn" data-testid="detail-edit-button" onClick={onEdit}>
+                <Pencil size={15} /> Edit event
+              </button>
+              <button className="light-btn danger" data-testid="detail-delete-button" onClick={onDelete}>
+                <Trash2 size={15} /> Delete event
+              </button>
+            </div>
+          ) : null}
+        </div>
+      </article>
+    </section>
+  );
+}
+
+function CalendarIconDot() {
+  // tiny inline svg to avoid importing another icon
+  return (
+    <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+      <rect x="3" y="4" width="18" height="18" rx="2" />
+      <line x1="16" y1="2" x2="16" y2="6" />
+      <line x1="8" y1="2" x2="8" y2="6" />
+      <line x1="3" y1="10" x2="21" y2="10" />
+    </svg>
+  );
+}
+
+
+function Certificates({ certificates, onDownload }) {
   return (
     <section className="content-section standalone">
       <div className="section-head">
@@ -602,6 +815,7 @@ function Certificates({ certificates }) {
                 href={`${API}/certificates/${cert.event_id}`}
                 target="_blank"
                 rel="noreferrer"
+                onClick={() => onDownload && onDownload(cert)}
               >
                 <Download size={15} /> Download PDF
               </a>
@@ -609,10 +823,10 @@ function Certificates({ certificates }) {
           ))}
         </div>
       ) : (
-        <div className="empty">
+        <div className="empty" data-testid="certificates-empty">
           <GraduationCap size={25} />
           <b>Your first certificate is waiting</b>
-          <span>Complete an event to see it here.</span>
+          <span>Complete an event to see it here — attend and check in to earn one.</span>
         </div>
       )}
     </section>
@@ -689,10 +903,13 @@ function EventModal({ title, eyebrow, initial, onClose, onSubmit }) {
           description: initial.description,
           date: initial.date,
           time: initial.time,
+          duration: initial.duration || "",
           location: initial.location,
+          department: initial.department || "Campus",
+          event_type: initial.event_type || "Learning",
           capacity: initial.capacity,
         }
-      : { title: "", description: "", date: "2026-03-15", time: "10:00 AM", location: "", capacity: 20 }
+      : { title: "", description: "", date: "2026-03-15", time: "10:00 AM", duration: "3 hours", location: "", department: "Campus", event_type: "Learning", capacity: 20 }
   );
   const [skills, setSkills] = useState(initial ? (initial.required_skills || []).join(", ") : "");
   const [busy, setBusy] = useState(false);
@@ -733,11 +950,28 @@ function EventModal({ title, eyebrow, initial, onClose, onSubmit }) {
           </Field>
         </div>
         <div className="two-col">
-          <Field label="Location">
-            <input data-testid="create-location-input" value={data.location} onChange={(e) => update("location", e.target.value)} required placeholder="Student center" />
+          <Field label="Duration">
+            <input data-testid="create-duration-input" value={data.duration} onChange={(e) => update("duration", e.target.value)} placeholder="3 hours" />
           </Field>
           <Field label="Volunteer spots">
             <input data-testid="create-capacity-input" type="number" min="1" value={data.capacity} onChange={(e) => update("capacity", e.target.value)} required />
+          </Field>
+        </div>
+        <Field label="Location">
+          <input data-testid="create-location-input" value={data.location} onChange={(e) => update("location", e.target.value)} required placeholder="Student center" />
+        </Field>
+        <div className="two-col">
+          <Field label="Department">
+            <input data-testid="create-department-input" value={data.department} onChange={(e) => update("department", e.target.value)} placeholder="Computer Science" />
+          </Field>
+          <Field label="Event type">
+            <select data-testid="create-type-select" value={data.event_type} onChange={(e) => update("event_type", e.target.value)}>
+              <option value="Learning">Learning</option>
+              <option value="Culture">Culture</option>
+              <option value="Community">Community</option>
+              <option value="Sports">Sports</option>
+              <option value="Service">Service</option>
+            </select>
           </Field>
         </div>
         <Field label="Skills needed">

@@ -58,7 +58,10 @@ class EventInput(BaseModel):
     description: str = Field(min_length=10, max_length=500)
     date: str
     time: str
+    duration: str = Field(default="", max_length=50)
     location: str = Field(min_length=2, max_length=100)
+    department: str = Field(default="Campus", max_length=80)
+    event_type: str = Field(default="Learning", max_length=40)
     required_skills: list[str] = []
     capacity: int = Field(ge=1, le=500)
 
@@ -118,9 +121,9 @@ async def seed_data():
         ])
     if await db.events.count_documents({}) == 0:
         await db.events.insert_many([
-            {"id": "event-python", "title": "Python for Everyone", "description": "A welcoming hands-on workshop helping first-years build their first useful script.", "date": "2026-03-18", "time": "10:00 AM", "location": "Innovation Lab · Block C", "required_skills": ["Python", "Public speaking"], "capacity": 12, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
-            {"id": "event-fest", "title": "Founders Day Festival", "description": "Make the annual campus celebration unforgettable for 2,000 students.", "date": "2026-03-21", "time": "04:30 PM", "location": "Central Quad", "required_skills": ["Design", "Event planning"], "capacity": 30, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
-            {"id": "event-green", "title": "Green Campus Drive", "description": "A morning of planting, cleanup, and small actions with a big campus impact.", "date": "2026-03-27", "time": "08:30 AM", "location": "North Garden", "required_skills": ["Teamwork"], "capacity": 25, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
+            {"id": "event-python", "title": "Python for Everyone", "description": "A welcoming hands-on workshop helping first-years build their first useful script.", "date": "2026-03-18", "time": "10:00 AM", "duration": "3 hours", "location": "Innovation Lab · Block C", "department": "Computer Science", "event_type": "Learning", "required_skills": ["Python", "Public speaking"], "capacity": 12, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
+            {"id": "event-fest", "title": "Founders Day Festival", "description": "Make the annual campus celebration unforgettable for 2,000 students.", "date": "2026-03-21", "time": "04:30 PM", "duration": "6 hours", "location": "Central Quad", "department": "Student Life", "event_type": "Culture", "required_skills": ["Design", "Event planning"], "capacity": 30, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
+            {"id": "event-green", "title": "Green Campus Drive", "description": "A morning of planting, cleanup, and small actions with a big campus impact.", "date": "2026-03-27", "time": "08:30 AM", "duration": "4 hours", "location": "North Garden", "department": "Sustainability", "event_type": "Community", "required_skills": ["Teamwork"], "capacity": 25, "organizer": "campusadmin", "status": "open", "checkin_code": gen_checkin_code()},
         ])
     # Backfill checkin_code for any legacy events
     async for e in db.events.find({"checkin_code": {"$exists": False}}, {"_id": 0, "id": 1}):
@@ -181,17 +184,37 @@ async def update_profile(data: ProfileInput, user: dict = Depends(current_user))
 
 
 async def event_payload(event: dict, user: Optional[dict] = None) -> dict:
-    result = {k: event.get(k) for k in ["id", "title", "description", "date", "time", "location", "required_skills", "capacity", "organizer", "status"]}
+    result = {k: event.get(k) for k in ["id", "title", "description", "date", "time", "duration", "location", "department", "event_type", "required_skills", "capacity", "organizer", "status"]}
+    result["duration"] = event.get("duration", "") or ""
+    result["department"] = event.get("department", "Campus")
+    result["event_type"] = event.get("event_type") or _derive_type(event.get("title", ""))
     apps = await db.applications.find({"event_id": event["id"]}, {"_id": 0}).to_list(100)
     result["volunteers"] = len([a for a in apps if a.get("status") in ["accepted", "completed"]])
+    result["seats_available"] = max(0, event.get("capacity", 0) - result["volunteers"])
     result["application"] = next((a.get("status") for a in apps if user and a.get("username") == user.get("username")), None)
     required = [s.lower() for s in event.get("required_skills", [])]
     user_skills = [s.lower() for s in (user.get("skills", []) if user else [])]
     result["match"] = bool(user and user.get("role") == "volunteer" and (not required or set(required) & set(user_skills)))
+    # organizer display name
+    organizer = await db.users.find_one({"username": event.get("organizer", "")}, {"_id": 0, "name": 1})
+    result["organizer_name"] = organizer.get("name") if organizer else event.get("organizer", "Campus Events")
     # Only expose checkin_code to the organizer who owns the event
     if user and user.get("role") == "organizer" and event.get("organizer") == user.get("username"):
         result["checkin_code"] = event.get("checkin_code")
     return result
+
+
+def _derive_type(title: str) -> str:
+    t = title.lower()
+    if "festival" in t or "fest" in t or "culture" in t:
+        return "Culture"
+    if "green" in t or "clean" in t or "drive" in t:
+        return "Community"
+    if "sport" in t or "run" in t or "match" in t:
+        return "Sports"
+    if "service" in t or "volunteer" in t:
+        return "Service"
+    return "Learning"
 
 
 @api.get("/events")
